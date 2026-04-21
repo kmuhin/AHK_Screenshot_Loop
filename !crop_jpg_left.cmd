@@ -1,0 +1,1 @@
+for %%i in (*.jpg) do ffmpeg -i "%%i" -vf "crop=2560:1440:0:155" -q:v 1 "cropped_%%i"
