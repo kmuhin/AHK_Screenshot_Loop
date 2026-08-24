@@ -2,60 +2,121 @@
 # В каждой подпапке делаю из изображений видео с частотой одно изображения в секунду.
 # Формат mkv.
 # Требуется установленный ffmpeg.
-# Добавляю в субтитры названия файлов.
-# После создания субтитров с оригинальнымы названиями, переименовываю файлы изображений в 4-х значные номера по порядку: 0000.jpg, 0001.jpg, 0002.jpg, ...
+# Добавляю субтитры из имён файлов.
+# После создания субтитров с оригинальными названиями,
+# переименовываю файлы изображений в 4-х значные номера по порядку: 0000.jpg, 0001.jpg, 0002.jpg, ...
 # После создания видео переименовываю изображения обратно в оригинальные имена.
 
+import argparse
 import os
 import subprocess
+import sys
 import json
 from pathlib import Path
 from datetime import datetime, timedelta
+from config import APP_DIR, load_config
 
-# временный файл субтитров
-file_srt = '!output.srt'
-# файл видео
-file_video = "!output.mkv"
-# маска изображений для видео
-files_mask = '*.jpg'
-# временный файл переименовывания файлов изображений
-file_renaming_map = "!renaming_map.json"
-# папка с подпапками изображений. Если поставить '', то будет искать подпапки в текущий директории.
-dir_shots = 'sshots/'
+config = load_config()
+ffmpeg = config.find_ffmpeg(APP_DIR)
 
-# команда ffmpeg конвертирование изображений в видеофайл
-# %04d.jpg - формат файлов изображений типа: 0000.jpg, 0001.jpg, 0002.jpg, ...
-ffmpeg_cmd = f'''ffmpeg -hide_banner -framerate 1 -i %04d.jpg -i !output.srt -max_interleave_delta 0 {file_video}'''
-# Пример установки принудительного размера видео и отключения масштабирования.
-# ffmpeg_cmd =  f'''ffmpeg -framerate 1 -i %04d.jpg -i !output.srt -max_interleave_delta 0 -vf "scale=5120:1600:force_original_aspect_ratio=decrease,pad=5120:1600:-1:-1,setsar=1" {file_video}'''
+print("APP_DIR =", APP_DIR)
+print("FFMPEG =", ffmpeg)
+print("DIR_SHOTS =", config.dir_shots)
 
 
-def convert_ffmpeg():
+def convert_ffmpeg(
+        f_video: str | Path,
+        f_srt: str | Path,
+        frame_pattern: str = "%04d.jpg",
+) -> bool:
     """
-        Запускаю ffmpeg в текущей папке.
-        Конвертирую изображения в видеофайл
+    Запускаю ffmpeg в текущей папке.
+    Конвертирую изображения + субтитры в видеофайл.
     """
-    result = subprocess.run(ffmpeg_cmd)
-    return True if result.returncode == 0 else False
+    f_video = Path(f_video)
+    f_srt = Path(f_srt)
+
+    if not any(Path.cwd().glob(frame_pattern.replace('%04d', '*'))):
+        print("No input frames found.")
+        return False
+
+    if not f_srt.exists():
+        print(f"Subtitle file not found: {f_srt}")
+        return False
+    # Пример установки принудительного размера видео и отключения масштабирования.
+    # ffmpeg_cmd =  f'''ffmpeg -framerate 1 -i %04d.jpg -i !output.srt -max_interleave_delta 0 -vf "scale=5120:1600:force_original_aspect_ratio=decrease,pad=5120:1600:-1:-1,setsar=1" {file_video}'''
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-framerate", str(config.ffmpeg_input_framerate),
+        "-i", frame_pattern,
+        "-i", str(f_srt),
+        "-max_interleave_delta", "0",
+        "-c:v", config.ffmpeg_video_encoder,
+        str(f_video)
+    ]
+
+    print("Running ffmpeg:")
+    print(" ".join(f'"{arg}"' if " " in arg else arg for arg in cmd))
+
+    try:
+        result = subprocess.run(cmd, text=True)
+    except FileNotFoundError:
+        print(f"ffmpeg not found in PATH: {ffmpeg}")
+        return False
+    if result.returncode != 0:
+        print(f"ffmpeg failed with exit code: {result.returncode}")
+        return False
+
+    return True
 
 
-def create_srt(lines: list):
-    """
-     create subtitle file 
-     one line - one second
+def format_srt_timestamp(td: timedelta) -> str:
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    millis = int(td.microseconds / 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
+
+def create_srt(lines: list[str], file_srt: str | Path) -> None:
     """
-    with open(file_srt, 'w') as f:
+    Создаю SRT-файл из списка имён файлов.
+    Каждое изображение показывается 1 секунду.
+    """
+
+    file_srt = Path(file_srt)
+    with file_srt.open('w', encoding='utf-8', newline='\n') as f:
         for idx, line in enumerate(lines):
-            f.write(f'{idx + 1}\n')
-            timestamp1 = timedelta(seconds=idx)
-            f.write(f"{timestamp1},000 --> {timestamp1},999\n")
+            start = timedelta(seconds=idx)
+            end = timedelta(seconds=idx + 1)
+            f.write(f"{idx + 1}\n")
+            f.write(f"{format_srt_timestamp(start)} --> {format_srt_timestamp(end)}\n")
             f.write(f"{line}\n\n")
 
 
-def rename_files():
+def rename_files(renaming_map: list[dict[str, str]]) -> None:
     """
-    Переименовываю файлы для ffmpeg 
+    Переименовываю файлы для ffmpeg по карте renaming_map.
+    В текущей директории.
+    Карта:
+        [
+            {'src': 'image_a.jpg', 'dst': '0000.jpg'},
+            {'src': 'image_b.jpg', 'dst': '0001.jpg'},
+            ...
+        ]
+    """
+
+    print('Rename files.')
+
+    for row in renaming_map:
+        Path(row['src']).rename(row['dst'])
+
+
+def make_renaming_map() -> list[dict[str, str]]:
+    """
+    Переименовываю файлы для ffmpeg. В текущей директории.
     в 4-х значные номера по порядку: 0000.jpg, 0001.jpg, 0002.jpg, ...
     и возвращаю карту переименований
     list of{
@@ -65,87 +126,211 @@ def rename_files():
 
     :return: list of dict
     """
-    print('Rename files.')
-    renaming_map = []
-    for idx, file in enumerate(Path().glob(files_mask)):
-        file_new = f'{idx:04}{file.suffix}'
-        # every name of file will be used in subtitles
+
+    print('Make renaming_map.')
+    renaming_map: list[dict[str, str]] = []
+
+    files = sorted(Path.cwd().glob(config.files_mask))
+
+    if not files:
+        print("No image files found.")
+        return []
+
+    for idx, file_original in enumerate(files):
+        file_new = f'{idx:04d}{file_original.suffix}'
         renaming_map.append(
-            {'src': file,
+            {'src': str(file_original),
              'dst': file_new
              })
-        file.rename(file_new)
     return renaming_map
 
 
-def save_renaming_map(renaming_map):
-    with open(file_renaming_map, 'w', encoding='utf-8') as f:
+def save_renaming_map(renaming_map: list[dict[str, str]]) -> None:
+    """
+    Сохраняю карту переименований.
+    """
+
+    with open(config.file_renaming_map, 'w', encoding='utf-8') as f:
         # ensure_ascii - не экранировать не аски символы (русские  символы)
-        json.dump([{'src': str(i['src']), 'dst': str(i['dst'])} for i in renaming_map], f, indent=2, ensure_ascii=False)
+        json.dump(renaming_map, f, indent=2, ensure_ascii=False)
 
 
-def read_renaming_map():
+def read_renaming_map() -> list[dict[str, str]] | None:
+    """
+    Загружаю карту переименований.
+    """
+
     try:
-        with open(file_renaming_map, 'r', encoding='utf-8') as f:
-            data_json = json.loads(f.read())
-    except IOError:
+        with open(config.file_renaming_map, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (IOError, json.JSONDecodeError):
         return None
-    else:
-        return data_json
 
 
-def rename_files_back(renaming_map):
+def rename_files_back(renaming_map: list[dict[str, str]]) -> None:
     """
-        По карте переименований переименовываю файлы обратно
+    По карте переименований восстанавливаю оригинальные имена файлов.
     """
-    print('Rename files back.')
+
     for f in renaming_map:
         Path(f['dst']).rename(f['src'])
 
 
-def check_renaming():
+def check_renaming() -> list[dict[str, str]]:
+    """
+    Проверяю, осталась ли карта незавершённого переименования.
+    """
+
     renaming_map = read_renaming_map()
     if renaming_map and Path(renaming_map[0]['dst']).exists():
-        print('Files are renamed already!')
         return renaming_map
+    return []
 
 
-def convert_current_folder():
+def convert_current_folder() -> None:
     """
-    create video file in current directory
+    Создаю видео файл в текущей директории
     """
-    if Path(file_video).exists():
-        print(f"File '{file_video}' exists")
-        return
-        rewrite = input(f"File '{file_srt}' exists. Rewrite file? [y/N]: ")
-        if rewrite.lower() != 'y':
-            return
+
     # сначала проверяю, если уже было переименование и не было переименования обратно из-за прерывания программы
-    # 
-    renaming_map = check_renaming() or rename_files()
-    print(f"Files {len(renaming_map)}")
-    # create subtitles by file names
+    #
+    renaming_map = check_renaming()
+
     if renaming_map:
-        create_srt([i['src'] for i in renaming_map])
-        save_renaming_map(renaming_map)
-    convert_ffmpeg()
-    rename_files_back(renaming_map)
+        print('Found unfinished file renaming.')
+    else:
+        renaming_map = make_renaming_map()
+
+    if not renaming_map:
+        print("No files to process.")
+        return
+
+    print(f"Files {len(renaming_map)}")
+    save_renaming_map(renaming_map)
+    rename_files(renaming_map)
+
+    # create subtitles by file names
+    create_srt(
+        [Path(i['src']).name for i in renaming_map],
+        config.file_srt
+    )
+    try:
+        # Создаём видео.
+        success = convert_ffmpeg(
+            config.file_video,
+            config.file_srt,
+        )
+        if not success:
+            print("Video conversion failed.")
+    finally:
+        # В любом случае восстанавливаем оригинальные имена.
+        rename_files_back(renaming_map)
 
 
-def convert_subfolders():
+def convert_subfolders() -> None:
     """
-        Конвертирование во всех подпапках,
-        кроме подпапки текущего дня.
+    Конвертирую все подпапки из config.dir_shots,
+    кроме подпапки текущего дня.
     """
-    workdir = Path(__file__).parent.absolute()
+
     date_now = datetime.now().date().isoformat()
-    for d in Path(dir_shots).glob('*'):
-        dpath = workdir.joinpath(d)
-        print(dpath)
-        if date_now not in str(d) and dpath.is_dir():
+
+    original_cwd = Path.cwd()
+
+    shots_dir = APP_DIR / config.dir_shots
+
+    if not shots_dir.exists():
+        print(f"Directory not found: {shots_dir}")
+        return
+
+    for dpath in sorted(shots_dir.iterdir()):
+
+        if not dpath.is_dir():
+            continue
+
+        # Не обрабатываем текущий день.
+        if date_now in dpath.name:
+            print(f"Skip current day: {dpath}")
+            continue
+
+        print()
+        print(f"Processing: {dpath}")
+
+        video_file = dpath / config.file_video
+
+        if video_file.exists():
+            print(
+                f"File '{config.file_video}' already exists."
+            )
+
+            # Если программа была прервана после переименования.
+            try:
+                os.chdir(dpath)
+                rename_files_back(
+                    check_renaming()
+                )
+            finally:
+                os.chdir(original_cwd)
+
+            continue
+
+        try:
+            os.chdir(dpath)
+
+            convert_current_folder()
+
+        except Exception as e:
+            print(
+                f"Error processing {dpath}: {e}",
+                file=sys.stderr,
+            )
+
+        finally:
+            os.chdir(original_cwd)
+
+    os.chdir(original_cwd)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Создание MKV-видео из последовательности JPG с субтитрами из имён файлов."
+    )
+
+    parser.add_argument(
+        "folder",
+        nargs="?",
+        help=f'Папка для обработки. Если не указана, обрабатываются подпапки из {config.dir_shots or "текущей директории"}.'
+    )
+
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.folder:
+        dpath = Path(args.folder)
+        print(f"Processing: {dpath}")
+
+        if not dpath.is_dir():
+            print(
+                f"Directory not found: {dpath}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        try:
             os.chdir(dpath)
             convert_current_folder()
+        except Exception as e:
+            print(
+                f"Error: {e}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        convert_subfolders()
 
 
 if __name__ == '__main__':
-    convert_subfolders()
+    main()

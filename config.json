@@ -1,0 +1,10 @@
+{
+  "dir_shots": "sshots",
+  "file_video": "!output.mkv",
+  "file_srt": "!output.srt",
+  "file_renaming_map": "!renaming_map.json",
+  "files_mask": "*.jpg",
+  "ffmpeg": "ffmpeg.exe",
+  "ffmpeg_video_encoder": "libx264",
+  "ffmpeg_input_framerate": 10
+}

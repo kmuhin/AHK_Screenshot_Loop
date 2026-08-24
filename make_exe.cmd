@@ -1,0 +1,1 @@
+pyinstaller --onefile make_video.py
