@@ -14,7 +14,7 @@
 - Для конвертации в видео через python скрипт: Python 3.6+ (из-за f-строк и pathlib) 
 
 ## Файлы
-TakeScreenshotLoop.ahk` — основной AHK-скрипт для снятия скриншотов.
+- `TakeScreenshotLoop.ahk` — основной AHK-скрипт для снятия скриншотов.
 - `make_video.py` — Python-скрипт для обхода подпапок в `sshots/` и сборки `!output.mkv` из изображений одной подпапки.
 - `make_video.exe` — скомпилированная версия `make_video.py` для Windows. Можно запускать без установки Python.
 
