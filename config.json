@@ -6,5 +6,5 @@
   "files_mask": "*.jpg",
   "ffmpeg": "ffmpeg.exe",
   "ffmpeg_video_encoder": "libx264",
-  "ffmpeg_input_framerate": 10
+  "ffmpeg_input_framerate": 1
 }
